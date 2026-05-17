@@ -1,0 +1,18 @@
+# Python virtual environment (가상환경 배제)
+.venv/
+venv/
+ENV/
+env/
+
+# Python byte-compiled / cache files (파이썬 캐시 배제)
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Operating System files (OS 임시 파일 배제)
+.DS_Store
+Thumbs.db
+
+# IDE / Editor settings (IDE 설정 배제)
+.vscode/
+.idea/
