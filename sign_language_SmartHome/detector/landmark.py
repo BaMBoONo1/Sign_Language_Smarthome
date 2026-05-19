@@ -1,6 +1,50 @@
 import cv2
 import numpy as np
+import os
+import shutil
+import mediapipe as mp
 import mediapipe.python.solutions.hands as mp_hands
+import mediapipe.python.solution_base as mp_solution_base
+
+
+def _configure_mediapipe_assets():
+    source_modules = os.path.join(os.path.dirname(mp.__file__), "modules")
+    candidates = []
+    if os.environ.get("MEDIAPIPE_ASSET_ROOT"):
+        candidates.append(os.environ["MEDIAPIPE_ASSET_ROOT"])
+    candidates.extend(
+        [
+            os.path.join("C:\\", "SignLanguageSmartHome", "mediapipe_root"),
+            os.path.join("C:\\", "Temp", "SignLanguageSmartHome", "mediapipe_root"),
+            os.path.join("C:\\", "Users", "Public", "Documents", "SignLanguageSmartHome", "mediapipe_root"),
+            os.path.join("C:\\", "Users", "Public", "SignLanguageSmartHome", "mediapipe_root"),
+        ]
+    )
+
+    last_error = None
+    for asset_root in candidates:
+        target_modules = os.path.join(asset_root, "mediapipe", "modules")
+        target_solution_base = os.path.join(asset_root, "mediapipe", "python", "solution_base.py")
+        required_graph = os.path.join(target_modules, "hand_landmark", "hand_landmark_tracking_cpu.binarypb")
+        try:
+            if not os.path.exists(required_graph):
+                os.makedirs(os.path.dirname(target_modules), exist_ok=True)
+                shutil.copytree(source_modules, target_modules, dirs_exist_ok=True)
+
+            os.makedirs(os.path.dirname(target_solution_base), exist_ok=True)
+            if not os.path.exists(target_solution_base):
+                with open(target_solution_base, "w", encoding="utf-8") as file:
+                    file.write("# MediaPipe resource path anchor for non-ASCII project paths.\n")
+
+            mp_solution_base.__file__ = target_solution_base
+            return
+        except Exception as exc:
+            last_error = exc
+
+    print(f"MediaPipe asset path fallback failed: {last_error}")
+
+
+_configure_mediapipe_assets()
 
 class Detector:
     def __init__(self):

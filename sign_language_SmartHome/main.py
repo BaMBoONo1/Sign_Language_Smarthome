@@ -1,8 +1,9 @@
-from app import InteractionApp
+from ui.pyqt_app import run_app
+
 
 def main():
-    app = InteractionApp()
-    app.start()
+    run_app()
+
 
 if __name__ == "__main__":
     main()
