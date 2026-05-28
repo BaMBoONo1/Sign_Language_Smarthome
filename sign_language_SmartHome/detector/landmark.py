@@ -161,3 +161,31 @@ class Detector:
                 
         return all_angles
 
+    def check_flat_hands(self):
+        """
+        양손이 모두 검출되고, 양손의 4개 손가락(검지, 중지, 약지, 새끼)이 모두 펴진 상태인지 검사합니다.
+        """
+        if not self.hand_results or not self.hand_results.multi_hand_landmarks:
+            return False
+        if len(self.hand_results.multi_hand_landmarks) < 2:
+            return False
+        
+        # 두 손 모두 쫙 펴진 상태인지 확인
+        flat_count = 0
+        for hand_landmarks in self.hand_results.multi_hand_landmarks:
+            landmarks = hand_landmarks.landmark
+            
+            # 검지, 중지, 약지, 새끼의 TIP이 PIP보다 y좌표상 위에 있는지 확인
+            # y좌표가 작을수록 화면상 위쪽입니다.
+            # 8(검지 TIP) < 6(검지 PIP)
+            # 12(중지 TIP) < 10(중지 PIP)
+            # 16(약지 TIP) < 14(약지 PIP)
+            # 20(새끼 TIP) < 18(새끼 PIP)
+            if (landmarks[8].y < landmarks[6].y and
+                landmarks[12].y < landmarks[10].y and
+                landmarks[16].y < landmarks[14].y and
+                landmarks[20].y < landmarks[18].y):
+                flat_count += 1
+                
+        return flat_count >= 2
+

@@ -23,7 +23,8 @@ _configure_qt_runtime()
 
 import cv2
 import numpy as np
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -53,7 +54,7 @@ DEVICE_TYPES = ["조명", "에어컨", "보일러"]
 DEFAULT_ROOMS = ["방", "거실", "부엌"]
 DEFAULT_DEVICES = [
     {"room": "방", "type": "조명", "status": "ON", "active": True, "connected": True},
-    {"room": "방", "type": "에어컨", "status": "OFF", "active": False, "connected": True},
+    {"room": "방", "type": "에어컨", "status": "OFF", "active": False, "connected": True, "temp" : 20},
     {"room": "거실", "type": "조명", "status": "ON", "active": True, "connected": True},
     {"room": "거실", "type": "보일러", "status": "ON", "active": True, "connected": True, "temp": 22},
     {"room": "부엌", "type": "조명", "status": "OFF", "active": False, "connected": True},
@@ -235,6 +236,9 @@ class CameraWorker(QThread):
         self._running = True
         self._recognition_enabled = True
         self.recognizer = None
+        self.is_active = False
+        self.flat_hands_start_time = None
+        self.last_action_time = time.time()
 
     def set_recognition_enabled(self, enabled):
         self._recognition_enabled = enabled
@@ -253,7 +257,7 @@ class CameraWorker(QThread):
 
             try:
                 self.recognizer = GestureRecognizer()
-                self.camera_message.emit("카메라 연결됨 · 수화 인식 준비 완료")
+                self.camera_message.emit("대기 상태 · 양손을 쫙 펴서 3초간 유지하여 활성화")
             except Exception as exc:
                 self.recognizer = None
                 self.camera_message.emit(f"카메라 연결됨 · 인식기 준비 실패: {exc}")
@@ -271,9 +275,49 @@ class CameraWorker(QThread):
 
                 if self._recognition_enabled and self.recognizer is not None:
                     try:
-                        word = self.recognizer.process_frame(display_frame)
-                        if word:
-                            self.recognized_word.emit(word)
+                        now = time.time()
+                        if not self.is_active:
+                            # 대기 상태: 랜드마크 검출 및 렌더링만 진행
+                            self.recognizer.detector.process_hands(display_frame)
+                            self.recognizer._draw_landmarks(display_frame)
+                            
+                            is_flat = self.recognizer.detector.check_flat_hands()
+                            if is_flat:
+                                if self.flat_hands_start_time is None:
+                                    self.flat_hands_start_time = now
+                                elapsed = now - self.flat_hands_start_time
+                                if elapsed >= 3.0:
+                                    self.is_active = True
+                                    self.last_action_time = now
+                                    self.flat_hands_start_time = None
+                                    self.camera_message.emit("수화 인식 활성화됨 (20초 미입력 시 대기 전환)")
+                                else:
+                                    self.camera_message.emit(f"양손 감지됨 · 활성화까지 {3.0 - elapsed:.1f}초...")
+                            else:
+                                if self.flat_hands_start_time is not None:
+                                    self.flat_hands_start_time = None
+                                    self.camera_message.emit("대기 상태 · 양손을 쫙 펴서 3초간 유지하여 활성화")
+                        else:
+                            # 활성화 상태: 전체 프레임 처리(제스처 분류 포함)
+                            word = self.recognizer.process_frame(display_frame)
+                            is_flat = self.recognizer.detector.check_flat_hands()
+                            
+                            if is_flat:
+                                self.last_action_time = now
+                                
+                            if now - self.last_action_time >= 20.0:
+                                self.is_active = False
+                                self.flat_hands_start_time = None
+                                self.camera_message.emit("대기 상태 · 양손을 쫙 펴서 3초간 유지하여 활성화")
+                            else:
+                                if word:
+                                    self.last_action_time = now
+                                    self.camera_message.emit(f"수화 인식 중 · 감지: {word} (대기 시간 초기화)")
+                                    self.recognized_word.emit(word)
+                                else:
+                                    remaining = 20.0 - (now - self.last_action_time)
+                                    self.camera_message.emit(f"수화 인식 활성화 중 (남은 대기 시간: {remaining:.1f}초)")
+
                     except Exception as exc:
                         self.recognizer = None
                         self.camera_message.emit(f"카메라 연결됨 · 인식 처리 중지: {exc}")
@@ -627,10 +671,10 @@ class TouchInputPanel(QFrame):
         words_layout.setVerticalSpacing(12)
 
         groups = [
-            ("장소", "place", ["방", "거실", "부엌", "전체"]),
-            ("가전", "device", ["조명", "에어컨", "보일러"]),
+            ("장소", "place", ["방", "거실", "부엌"]),
+            ("가전", "device", ["에어컨", "보일러"]),
             ("정도", "degree", ["1도", "2도", "4도"]),
-            ("동작", "action", ["켜다", "끄다", "조명 켜다", "조명 끄다", "온도 높이기", "온도 낮추기", "실행", "지우기"]),
+            ("동작", "action", ["켜다", "끄다", "조명 켜다", "조명 끄다", "온도 높이기", "온도 낮추기"]),
         ]
         for index, (title, category, words) in enumerate(groups):
             group = QFrame()
@@ -681,7 +725,8 @@ class TouchInputPanel(QFrame):
 
 
 class RecognitionScreen(QWidget):
-    command_executed = pyqtSignal(list)
+    command_executed = pyqtSignal(list, bool)
+    mode_change = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -722,7 +767,7 @@ class RecognitionScreen(QWidget):
         clear_button.clicked.connect(self.clear_sequence)
         execute_button = QPushButton("명령 실행")
         execute_button.setProperty("primaryButton", True)
-        execute_button.clicked.connect(self.execute_sequence)
+        execute_button.clicked.connect(lambda: self.execute_sequence(auto_clear=False))
         footer_layout.addWidget(clear_button)
         footer_layout.addWidget(execute_button)
 
@@ -734,12 +779,54 @@ class RecognitionScreen(QWidget):
         self.sentence_panel.setVisible(not touch_open)
 
     def handle_word(self, word):
-        if word in ("실행", "확인"):
-            self.execute_sequence()
+        # 확인 또는 check → 기기 상태 화면 전환
+        if word in ("확인", "check"):
+            self.mode_change.emit("status")
+            return
+        # 입력 또는 enter → 인식 화면 전환 (문장 입력 가능)
+        if word in ("입력", "enter"):
+            self.mode_change.emit("recognition")
             return
         if word == "지우기":
             self.clear_sequence()
             return
+        if word in ("실행", "시작"):
+            # 조명 조작, 전원 조작, 온도 조작 단어가 포함되어 있는지 확인
+            action_words = ("조명 켜다", "조명 끄다", "켜다", "끄다", "온도 높이기", "온도 낮추기")
+            has_action = any(w in self.sequence for w in action_words)
+            if not has_action:
+                return
+            self.execute_sequence(auto_clear=(word == "시작"))
+            return
+
+        step = len(self.sequence)
+        # 1단계: 위치
+        if step == 0:
+            allowed = ("방", "거실", "부엌", "전체")
+            if word not in allowed:
+                return
+        # 2단계: 조명 조작 또는 가전
+        elif step == 1:
+            allowed = ("조명 켜다", "조명 끄다", "에어컨", "보일러")
+            if word not in allowed:
+                return
+        # 3단계: 전원 조작 또는 온도
+        elif step == 2:
+            if self.sequence[1] in ("조명 켜다", "조명 끄다"):
+                return
+            allowed = ("켜다", "끄다", "1도", "2도", "4도")
+            if word not in allowed:
+                return
+        # 4단계: 온도 조작
+        elif step == 3:
+            if self.sequence[2] in ("켜다", "끄다"):
+                return
+            allowed = ("온도 높이기", "온도 낮추기")
+            if word not in allowed:
+                return
+        else:
+            return
+
         self.sequence.append(word)
         self.touch_panel.set_sequence(self.sequence)
         self.recognized_text.setText(" ".join(self.sequence))
@@ -749,12 +836,13 @@ class RecognitionScreen(QWidget):
         self.touch_panel.set_sequence(self.sequence)
         self.recognized_text.setText("수화를 인식하면 여기에 표시됩니다")
 
-    def execute_sequence(self):
+    def execute_sequence(self, auto_clear=False):
+        is_auto = (auto_clear is True)
         if not self.sequence:
             self.recognized_text.setText("실행할 명령이 없습니다")
             return
         self.recognized_text.setText("명령 실행: " + " ".join(self.sequence))
-        self.command_executed.emit(list(self.sequence))
+        self.command_executed.emit(list(self.sequence), is_auto)
 
 
 class DeviceCard(QFrame):
@@ -799,7 +887,8 @@ class DeviceCard(QFrame):
     @staticmethod
     def _state_text(device):
         status = device.get("status", "OFF")
-        if "temp" in device:
+        # 온도가 표시되는 조건: 장치가 켜져 있을 때만
+        if device.get("active", False) and "temp" in device:
             return f"{status} · {device['temp']}℃"
         return status
 
@@ -821,11 +910,8 @@ class DeviceStatusScreen(QWidget):
         self.rebuild()
 
     def rebuild(self):
-        while self.content_layout.count():
-            item = self.content_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
+        # 기존 위젯과 레이아웃을 모두 정리하여 UI 뒤틀림 방지
+        self._clear_layout(self.content_layout)
 
         header = QLabel("SYSTEM STATUS")
         header.setObjectName("ScreenTitle")
@@ -847,7 +933,17 @@ class DeviceStatusScreen(QWidget):
                 grid.addWidget(DeviceCard(device), index // 2, index % 2)
             self.content_layout.addLayout(grid)
 
-        self.content_layout.addStretch()
+    def _clear_layout(self, layout):
+        """재귀적으로 레이아웃과 그 안의 위젯을 모두 삭제합니다."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            else:
+                child_layout = item.layout()
+                if child_layout:
+                    self._clear_layout(child_layout)
 
 
 class MainWindow(QMainWindow):
@@ -883,7 +979,9 @@ class MainWindow(QMainWindow):
         self.setup_screen.data_changed.connect(self.refresh_data_views)
         self.recognition_screen = RecognitionScreen()
         self.recognition_screen.command_executed.connect(self.apply_command)
+        self.recognition_screen.mode_change.connect(self.set_mode)
         self.status_screen = DeviceStatusScreen(self.rooms, self.devices)
+        self.status_screen.rebuild()
 
         self.stack.addWidget(self.recognition_screen)
         self.stack.addWidget(self.status_screen)
@@ -908,21 +1006,31 @@ class MainWindow(QMainWindow):
         index = {"recognition": 0, "status": 1, "setup": 2}[mode]
         self.stack.setCurrentIndex(index)
         self.navigation.update_active(mode)
-        self.camera_worker.set_recognition_enabled(mode == "recognition")
+        self.camera_worker.set_recognition_enabled(mode in ("recognition", "status"))
         if mode == "status":
             self.status_screen.rebuild()
         if mode == "setup":
             self.setup_screen.refresh_all()
 
     def handle_recognized_word(self, word):
-        if self.current_mode != "recognition":
+        # 현재 모드가 "status"일 경우, "입력"/"enter"/"실행"만 인식하여 인식 화면으로 전환하도록 허용
+        if self.current_mode == "status":
+            word_lower = word.lower()
+            if word_lower in ("입력", "enter", "실행"):
+                self.set_mode("recognition")
             return
+        # "입력"/"enter" 로 인식 화면 전환 (기존 동작)
+        if word in ("입력", "enter"):
+            self.recognition_screen.handle_word(word)
+            return
+        # 그 외 모든 단어를 인식 화면에 전달 (명령 실행 등) – 현재 화면에 관계없이 동작
         self.recognition_screen.handle_word(word)
+
 
     def refresh_data_views(self):
         self.status_screen.rebuild()
 
-    def apply_command(self, sequence):
+    def apply_command(self, sequence, auto_clear=False):
         joined = " ".join(sequence)
         target_room = next((room for room in self.rooms if room in sequence), None)
         target_type = next((device_type for device_type in DEVICE_TYPES if device_type in joined), None)
@@ -950,6 +1058,12 @@ class MainWindow(QMainWindow):
                 device["active"] = True
 
         self.status_screen.rebuild()
+        # Auto-clear sequence after 2 seconds if requested
+        if auto_clear:
+            QTimer.singleShot(2000, self.recognition_screen.clear_sequence)
+
+
+
 
     @staticmethod
     def _degree_from(sequence):
@@ -961,10 +1075,9 @@ class MainWindow(QMainWindow):
                     return 1
         return 1
 
-    def closeEvent(self, event):
-        self.camera_worker.stop()
-        self.camera_worker.wait(1500)
-        super().closeEvent(event)
+
+
+
 
 
 STYLE_SHEET = """
@@ -1108,7 +1221,7 @@ QPushButton[choiceButton="true"][selected="true"] {
 #RecognizedText {
     min-height: 84px;
     padding: 18px 20px;
-    color: #8c96a6;
+    color: #000000;
     background: #f7f8fa;
     border-radius: 12px;
     font-size: 27px;

@@ -26,7 +26,7 @@ const state = {
   rooms: ["방", "거실", "부엌"],
   devices: [
     { room: "방", type: "조명", status: "ON", active: true },
-    { room: "방", type: "에어컨", status: "OFF", active: false },
+    { room: "방", type: "에어컨", status: "OFF", active: false, temp: "20°C" },
     { room: "거실", type: "조명", status: "ON", active: true },
     { room: "거실", type: "보일러", status: "ON", active: true, temp: "22°C" },
     { room: "부엌", type: "조명", status: "OFF", active: false }
@@ -268,7 +268,7 @@ function DeviceCard(device) {
       <div class="device-icon-box">${Icon(deviceIcon(device.type), "small-icon")}</div>
       <div>
         <div class="device-name">${device.type}</div>
-        ${device.temp ? `<div class="device-temp">${Icon("thermometer", "micro-icon")} ${device.temp}</div>` : ""}
+        ${device.active && device.temp ? `<div class="device-temp">${Icon("thermometer", "micro-icon")} ${device.temp}</div>` : ""}
       </div>
       <div class="device-state"><span class="status-dot ${device.active ? "active" : ""}"></span>${device.status}</div>
     </article>
@@ -385,7 +385,7 @@ function handleAction(event) {
         type: state.selectedDeviceType,
         status: state.selectedDeviceType === "에어컨" ? "OFF" : "ON",
         active: state.selectedDeviceType !== "에어컨",
-        temp: state.selectedDeviceType === "보일러" ? "22°C" : undefined
+        temp: state.selectedDeviceType === "보일러" ? "22°C" : state.selectedDeviceType === "에어컨" ? "20°C" : undefined
       });
       render();
     }
@@ -410,6 +410,9 @@ function applyCommandFromSequence() {
   } else if (joined.includes("켜")) {
     device.active = true;
     device.status = "ON";
+    if (!device.temp) {
+      device.temp = device.type === "에어컨" ? "20°C" : device.type === "보일러" ? "22°C" : device.temp;
+    }
   } else if (joined.includes("온도") || joined.includes("도")) {
     device.active = true;
     device.status = "ON";
