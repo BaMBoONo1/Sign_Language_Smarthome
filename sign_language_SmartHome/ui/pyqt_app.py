@@ -1057,6 +1057,13 @@ class MainWindow(QMainWindow):
                 device["status"] = "ON"
                 device["active"] = True
 
+            # 온도 조절 범위 제한 적용 (에어컨: 16~30도, 보일러: 10~30도)
+            if "temp" in device:
+                if device["type"] == "에어컨":
+                    device["temp"] = max(16, min(30, device["temp"]))
+                elif device["type"] == "보일러":
+                    device["temp"] = max(10, min(30, device["temp"]))
+
         self.status_screen.rebuild()
         # Auto-clear sequence after 2 seconds if requested
         if auto_clear:
