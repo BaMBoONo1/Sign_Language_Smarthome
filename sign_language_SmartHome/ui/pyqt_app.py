@@ -795,6 +795,7 @@ class RecognitionScreen(QWidget):
             action_words = ("조명 켜다", "조명 끄다", "켜다", "끄다", "온도 높이기", "온도 낮추기")
             has_action = any(w in self.sequence for w in action_words)
             if not has_action:
+                self.show_error_message("오류: 제어 동작(켜다, 끄다 등)이 포함되어야 실행 가능합니다.")
                 return
             self.execute_sequence(auto_clear=(word == "시작"))
             return
@@ -804,27 +805,34 @@ class RecognitionScreen(QWidget):
         if step == 0:
             allowed = ("방", "거실", "부엌", "전체")
             if word not in allowed:
+                self.show_error_message(f"오류: '{word}' 입력 불가. 먼저 위치(방, 거실, 부엌 등)를 선택해야 합니다.")
                 return
         # 2단계: 조명 조작 또는 가전
         elif step == 1:
             allowed = ("조명 켜다", "조명 끄다", "에어컨", "보일러")
             if word not in allowed:
+                self.show_error_message(f"오류: '{word}' 입력 불가. 위치 다음에는 조명 제어나 가전(에어컨, 보일러)이 와야 합니다.")
                 return
         # 3단계: 전원 조작 또는 온도
         elif step == 2:
             if self.sequence[1] in ("조명 켜다", "조명 끄다"):
+                self.show_error_message(f"오류: '{word}' 입력 불가. 조명 제어에는 온도를 설정할 수 없습니다.")
                 return
             allowed = ("켜다", "끄다", "1도", "2도", "4도")
             if word not in allowed:
+                self.show_error_message(f"오류: '{word}' 입력 불가. 가전 다음에는 전원(켜다, 끄다) 또는 온도 수치(1도, 2도 등)가 와야 합니다.")
                 return
         # 4단계: 온도 조작
         elif step == 3:
             if self.sequence[2] in ("켜다", "끄다"):
+                self.show_error_message(f"오류: '{word}' 입력 불가. 가전 전원 제어 명령은 이미 완성되었습니다.")
                 return
             allowed = ("온도 높이기", "온도 낮추기")
             if word not in allowed:
+                self.show_error_message(f"오류: '{word}' 입력 불가. 온도 수치 다음에는 '온도 높이기' 또는 '온도 낮추기'가 와야 합니다.")
                 return
         else:
+            self.show_error_message("오류: 더 이상 명령 단어를 추가할 수 없습니다. 실행 또는 지우기를 해주세요.")
             return
 
         self.sequence.append(word)
@@ -836,10 +844,20 @@ class RecognitionScreen(QWidget):
         self.touch_panel.set_sequence(self.sequence)
         self.recognized_text.setText("수화를 인식하면 여기에 표시됩니다")
 
+    def restore_recognized_text(self):
+        if self.sequence:
+            self.recognized_text.setText(" ".join(self.sequence))
+        else:
+            self.recognized_text.setText("수화를 인식하면 여기에 표시됩니다")
+
+    def show_error_message(self, message):
+        self.recognized_text.setText(message)
+        QTimer.singleShot(3000, self.restore_recognized_text)
+
     def execute_sequence(self, auto_clear=False):
         is_auto = (auto_clear is True)
         if not self.sequence:
-            self.recognized_text.setText("실행할 명령이 없습니다")
+            self.show_error_message("실행할 명령이 없습니다")
             return
         self.recognized_text.setText("명령 실행: " + " ".join(self.sequence))
         self.command_executed.emit(list(self.sequence), is_auto)
@@ -1042,27 +1060,35 @@ class MainWindow(QMainWindow):
                 continue
 
             if "끄다" in joined:
+                if not device.get("active", False):
+                    self.recognition_screen.show_error_message(f"오류: {device['room']} {device['type']}은(는) 이미 꺼져 있습니다.")
+                    continue
                 device["status"] = "OFF"
                 device["active"] = False
-            elif "켜다" in joined:
+            elif "켜다" in joined and not ("온도" in joined):
+                if device.get("active", False):
+                    self.recognition_screen.show_error_message(f"오류: {device['room']} {device['type']}은(는) 이미 켜져 있습니다.")
+                    continue
                 device["status"] = "ON"
                 device["active"] = True
 
-            if "온도 높이기" in joined and "temp" in device:
-                device["temp"] += self._degree_from(sequence)
-                device["status"] = "ON"
-                device["active"] = True
-            elif "온도 낮추기" in joined and "temp" in device:
-                device["temp"] -= self._degree_from(sequence)
-                device["status"] = "ON"
-                device["active"] = True
+            if ("온도 높이기" in joined or "온도 낮추기" in joined) and "temp" in device:
+                if not device.get("active", False):
+                    self.recognition_screen.show_error_message(f"오류: {device['room']} {device['type']}의 전원이 꺼져 있어 온도를 조절할 수 없습니다.")
+                    continue
 
-            # 온도 조절 범위 제한 적용 (에어컨: 16~30도, 보일러: 10~30도)
-            if "temp" in device:
-                if device["type"] == "에어컨":
-                    device["temp"] = max(16, min(30, device["temp"]))
-                elif device["type"] == "보일러":
-                    device["temp"] = max(10, min(30, device["temp"]))
+                if "온도 높이기" in joined:
+                    limit = 30
+                    if device["temp"] >= limit:
+                        self.recognition_screen.show_error_message(f"오류: {device['room']} {device['type']}은(는) 이미 최고 온도({limit}도)입니다.")
+                        continue
+                    device["temp"] = min(limit, device["temp"] + self._degree_from(sequence))
+                elif "온도 낮추기" in joined:
+                    limit = 16 if device["type"] == "에어컨" else 10
+                    if device["temp"] <= limit:
+                        self.recognition_screen.show_error_message(f"오류: {device['room']} {device['type']}은(는) 이미 최저 온도({limit}도)입니다.")
+                        continue
+                    device["temp"] = max(limit, device["temp"] - self._degree_from(sequence))
 
         self.status_screen.rebuild()
         # Auto-clear sequence after 2 seconds if requested
